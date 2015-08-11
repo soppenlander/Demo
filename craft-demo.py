@@ -3,6 +3,7 @@
 import os
 import time
 import boto.ec2
+import boto.ec2.elb
 import urllib
 import re
 import subprocess
@@ -131,8 +132,12 @@ def install_salt_instances():
 
 	# install the salt master package on the salt master, [0] by convention
 	subprocess.call([SSH, SSH_FLAGS, hosts[0].public_dns_name, "sudo apt-get install -y salt-master"])
-	subprocess.call([SSH, SSH_FLAGS, hosts[0].public_dns_name, "sudo service salt-master start"])
 
+	# define minion groups on the salt master
+	subprocess.call([SSH, SSH_FLAGS, hosts[0].public_dns_name, "sudo chmod 666 /etc/salt/master"])
+	subprocess.call([SSH, SSH_FLAGS, hosts[0].public_dns_name, "sudo echo \"nodegroups:\n  group1: 'L@%s'\n  group2: 'L@%s'\n\" >> /etc/salt/master" % (hosts[1].public_dns_name, hosts[2].public_dns_name)])
+	subprocess.call([SSH, SSH_FLAGS, hosts[0].public_dns_name, "sudo chmod 640 /etc/salt/master"])
+	subprocess.call([SSH, SSH_FLAGS, hosts[0].public_dns_name, "sudo service salt-master restart"])
 
 	# install salt minion on the rest of them
 	for i in range(1, DEMO_MINIONS+1):
@@ -161,6 +166,23 @@ def deploy_sample():
 
 	return;
 
+# initialize a load balancer
+def set_up_load_balancer():
+	zones = [os.environ['AWS_DEFAULT_REGION']]
+	ports = [(80, 8080, 'http')]
+	balancer = elb_conn.create_load_balancer('demo-lb', zones, ports)
+
+	# configure a health check
+	hc = HealthCheck(interval = 20, healthy_threshold = 3, unhealthy_threshold = 5, target = 'HTTP:8080')
+	balancer.configure_health_check(hc)
+
+	# add the salt minions
+	for x in range (1, DEMO_MINIONS+1):
+		balancer.register_instances(hosts[x].id)
+
+	print 'Load balancer address is balancer.dns_name'
+	return balancer;
+
 # check AWS environment variables and quit if they're not set
 check_env_vars('AWS_SECRET_KEY')
 check_env_vars('AWS_ACCESS_KEY')
@@ -171,12 +193,12 @@ ec2 = boto.ec2.connect_to_region(os.environ['AWS_DEFAULT_REGION'], aws_access_ke
 
 # set up security group
 print "Configuring security groups..."
-#security_group_ssh()
+security_group_ssh()
 
 # start up a salt master and N minions, add one for the salt master
 print "Starting instances..."
-#for x in range(0, DEMO_MINIONS+1):
-#	ec2.run_instances(DEMO_AMI, key_name='demo-key-pair', instance_type='t1.micro', security_groups=[DEMO_SECURITY_GROUP])
+for x in range(0, DEMO_MINIONS+1):
+	ec2.run_instances(DEMO_AMI, key_name='demo-key-pair', instance_type='t1.micro', security_groups=[DEMO_SECURITY_GROUP])
 
 # check once every 30 seconds until they're all fully up
 wait_for_servers_up()
@@ -187,25 +209,27 @@ load_hosts_list()
 
 # tag server[0] as the salt master and server[1..N] as salt minions out of running instances
 print "Tagging salt hosts..."
-#tag_salt_hosts()
+tag_salt_hosts()
 
 # open up salt ports on the salt master
 print "More configuration of security groups..."
-#security_group_salt()
+security_group_salt()
 
 # install salt master and salt minion packages, update host files
 print "Installing salt..."
-#install_salt_instances()
+install_salt_instances()
 
 # install jdk tomcat through salt
-#install_jdk_tomcat()
+install_jdk_tomcat()
 
 # copy sample war files to the salt master and deploy 1.0 through salt
 deploy_sample()
 
-# TODO:  create load balancer, add salt minions to it
-
 # TODO:  pause to demo hello world app
+
+# create load balancer, add salt minions to it
+#elb_conn = boto.ec2.elb.connect_to_region(aws_access_key_id = os.environ['AWS_ACCESS_KEY'], aws_secret_access_key = os.environ['AWS_SECRET_KEY'], region_name='us-west-2b')
+#lb = set_up_load_balancer()
 
 # TODO:  rev the hello world app on one of the minions
 
